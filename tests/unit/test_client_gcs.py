@@ -235,3 +235,58 @@ def test_parse_timestamp_matches_isoparse(value):
     parsed = GCSClient.parse_timestamp(value)
     assert parsed == isoparse(value)
     assert isinstance(parsed.tzinfo, timezone)
+
+
+def _gen(name, generation, created, deleted=None):
+    item = {
+        "name": name,
+        "generation": str(generation),
+        "etag": f"e{generation}",
+        "size": "1",
+        "timeCreated": f"2026-10-01T00:00:0{created}Z",
+        "updated": f"2026-10-01T00:00:0{created}Z",
+    }
+    if deleted is not None:
+        item["timeDeleted"] = f"2026-10-01T00:00:0{deleted}Z"
+    return item
+
+
+async def _all_pages(client):
+    pages = client._pages_after("", "", lambda _: True)
+    return [(page.rows, page.last) async for page in pages]
+
+
+@pytest.mark.parametrize("list_deleted", [False, True])
+def test_delete_rows_from_generations_across_pages(list_deleted):
+    client = _make_client()
+    client._fs.version_aware = True
+    client._fs._call = AsyncMock(
+        side_effect=[
+            # overwritten at 2, deleted at 3, recreated at 4, deleted at 5
+            {"items": [_gen("a", 1, 1, 2), _gen("a", 2, 2, 3)], "nextPageToken": "t"},
+            {"items": [_gen("a", 3, 4, 5), _gen("b", 9, 1)]},
+        ]
+    )
+    client.list_deleted = list_deleted
+
+    pages = sync(get_loop(), _all_pages, client)
+    rows = [
+        (r.path, r.version, bool(r.location), r.last_modified.second)
+        for page, _ in pages
+        for r in page
+    ]
+
+    assert [last for _, last in pages] == ["a", "b"]
+    versions = [("a", "1", False, 1), ("a", "2", False, 2)]
+    if not list_deleted:
+        assert [len(page) for page, _ in pages] == [2, 2]
+        assert rows == [*versions, ("a", "3", False, 4), ("b", "9", False, 1)]
+    else:
+        assert [len(page) for page, _ in pages] == [1, 5]  # a's last generation waits
+        assert rows == [
+            *versions,
+            ("a", "deleted:2", True, 3),
+            ("a", "3", False, 4),
+            ("a", "deleted:3", True, 5),
+            ("b", "9", False, 1),
+        ]
