@@ -327,7 +327,18 @@ class ClientS3(Client):
             **kwargs,
         )
         entries = page.get("Versions" if versions else "Contents", [])
-        keys = [d["Key"] for d in entries + page.get("DeleteMarkers", [])]
+        markers = page.get("DeleteMarkers", [])
+        keys = [d["Key"] for d in entries + markers]
+        rows: list[Any] = [
+            self._row_from_boto(d, versions) for d in entries if keep(d["Key"])
+        ]
+        if self.list_deleted and markers:
+            rows += [
+                self._deleted_row(d["Key"], d["VersionId"], d["LastModified"])
+                for d in markers
+                if keep(d["Key"])
+            ]
+            rows.sort(key=lambda r: r.path)  # stable: keys stay grouped
         if not page.get("IsTruncated"):
             token = None
         elif versions:
@@ -335,18 +346,26 @@ class ClientS3(Client):
         else:
             token = page["NextContinuationToken"]
         return Page(
-            [self._row_from_boto(d, versions) for d in entries if keep(d["Key"])],
-            entries[0]["Key"] if entries else None,
+            rows,
+            # delete markers are rows of their own when listed
+            min(keys, default=None)
+            if self.list_deleted
+            else (entries[0]["Key"] if entries else None),
             max(keys, default=None),
             token,
         )
 
     def _row_from_boto(self, v, versions: bool) -> tuple:
+        version = ""
+        if versions:
+            version = v.get("VersionId", "")
+            if not self.list_deleted:
+                version = ClientS3.clean_s3_version(version)
         return FileRow(
             self.uri,
             v["Key"],
             v["Size"],
-            ClientS3.clean_s3_version(v.get("VersionId", "")) if versions else "",
+            version,
             v.get("ETag", "").strip('"'),
             v.get("IsLatest", True),
             v["LastModified"],
