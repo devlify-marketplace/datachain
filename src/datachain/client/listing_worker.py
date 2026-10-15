@@ -192,6 +192,7 @@ class Pool:
                     client.fs_kwargs,
                     client.cache,
                     client.LIST_PAGE_SIZE,
+                    client.list_deleted,
                     prefix,
                 )
             )
@@ -324,9 +325,10 @@ def main() -> None:
         os.dup2(devnull.fileno(), 0)
     if (spec := load(inp)) is None:
         return
-    cls, name, fs_kwargs, cache, page_size, prefix = spec
+    cls, name, fs_kwargs, cache, page_size, list_deleted, prefix = spec
     client = cls(name, fs_kwargs, cache)
     client.LIST_PAGE_SIZE = page_size
+    client.list_deleted = list_deleted
     sync(get_loop(), _serve, client, prefix, inp, out)
 
 
